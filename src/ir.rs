@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 
 // Types
 type Nat = usize;
@@ -8,11 +9,13 @@ pub type Label = String;
 #[derive(Debug, PartialEq)]
 pub enum Type {U32, S32}
 
-// Kernel
-pub struct Kernel(pub Vec<Statement>);
+// Kernel In Vec<Block> blocks are represented in order, first is entry. HashMap<Label, usize> links label to index of block.
+pub struct Kernel(pub Vec<Block>, pub HashMap<Label, usize>);
+
+pub struct Block (pub Vec<Statement>);
 
 #[derive(Debug, PartialEq)]
-pub struct  Statement (pub Option<Label>, pub Option<Guard>, pub Instruction);
+pub struct  Statement (pub Option<Guard>, pub Instruction);
 
 // Predicate
 #[derive(Debug, PartialEq)]
@@ -42,7 +45,7 @@ pub enum StateSpace {
 #[derive(Debug, PartialEq)]
 pub enum Operand {
     Register(Register),
-    Immediate(Immediate),
+    Immediate(Immediate)
     // review: should label also be part of operand, according to PTX spec its part of it, but only limited instructions use it
 }
 

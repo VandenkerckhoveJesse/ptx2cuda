@@ -1,8 +1,10 @@
 // Part of front end of decompiler, lifts parsed AST code into the intermediary representation.
 
+use std::collections::HashMap;
+use std::iter::Peekable;
 use std::os::macos::raw::stat;
 use std::vec::IntoIter;
-use crate::ir::{Address, Comparison, Dim, Guard, Immediate, Instruction, Kernel, Label, Operand, Register, SpecialReg, StateSpace, Statement, Type};
+use crate::ir::{Address, Block, Comparison, Dim, Guard, Immediate, Instruction, Kernel, Label, Operand, Register, SpecialReg, StateSpace, Statement, Type};
 use ptx_syntax::r#type::instruction::Inst;
 use ptx_syntax::r#type::instruction::mov::MovType;
 use ptx_syntax::r#type::instruction::setp::SetpCmpopFtzType;
@@ -26,52 +28,61 @@ pub fn lift(ast: Module) -> Result<Kernel, String> {
         .body
         .ok_or_else(|| "unsupported entry function: it has no body")?;
 
-    let mut statements: Vec<Statement> = Vec::new();
-    let mut iterator = body.statements.into_iter();
+    let mut labels: HashMap<Label, usize> = HashMap::new();
+    let mut blocks: Vec<Block> = Vec::new();
+    let mut iterator = body.statements.into_iter().peekable();
+    while let Some((block, label)) = lift_block(&mut iterator)? {
+        if let Some(label) = label {
+            labels.insert(label, blocks.len());
+        }
+        blocks.push(block)
+    }
+    Ok(Kernel(blocks, labels))
+}
 
-    while let Some(statement) = lift_statement(&mut iterator)? {
-        statements.push(statement);
+fn lift_block(iter: &mut Peekable<IntoIter<FunctionStatement>>) -> Result<Option<(Block, Option<Label>)>, String> {
+    if iter.peek().is_none() {
+        return Ok(None);
     }
 
-    Ok(Kernel(statements))
+    let mut lbl: Option<Label> = None;
+    let mut statements: Vec<Statement> = Vec::new();
+    while let Some(item) =  iter.next() {
+        match item {
+            FunctionStatement::Label { label, .. } => {
+                lbl = Some(label.val)
+            }
+            ptxStatment => {
+                if let Some(statement) = lift_statement(ptxStatment)? {
+                    statements.push(statement)
+                }
+            }
+        }
+        if matches!(iter.peek(), Some(FunctionStatement::Label {..})) { // if next is label we are end of block
+            break
+        }
+    }
+    Ok(Some((Block(statements), lbl)))
 }
 
 fn lift_statement(
-    iter: &mut IntoIter<FunctionStatement>
+    statement: FunctionStatement
 ) -> Result<Option<Statement>, String> {
-    loop {
-        let Some(item) = iter.next() else {
-            return Ok(None)
-        };
-        let (label, item) = match item {
-            FunctionStatement::Label { label, .. } => {
-                let next = iter
-                    .next()
-                    .ok_or("label without following statement")?;
-
-                (Some(label.val), next)
-            }
-
-            item => (None, item),
-        };
-        match item {
-            FunctionStatement::Instruction { instruction: PtxInstruction {
-                predicate,
-                inst,
-                ..
-            }, ..
-            } => return Ok(Some(Statement(label, lift_guard(predicate)?, lift_instruction(inst)?))),
-            FunctionStatement::Directive { .. } if label.is_none() => continue, // Ignore for now, eventually will have to be put in symbol table
-            FunctionStatement::Directive { .. } => {
-                return Err("labelled directives are unsupported".into());
-            }
-            unsupported => {
-                return Err(format!(
-                    "unsupported PTX function statement: {unsupported:?}"
-                ));
-            }
+    match statement {
+        FunctionStatement::Instruction { instruction: PtxInstruction {
+            predicate,
+            inst,
+            ..
+        }, ..
+        } => return Ok(Some(Statement(lift_guard(predicate)?, lift_instruction(inst)?))),
+        FunctionStatement::Directive { .. } => Ok(None), // Ignore for now, eventually will have to be put in symbol table
+        unsupported => {
+            return Err(format!(
+                "unsupported PTX function statement: {unsupported:?}"
+            ));
         }
     }
+
 }
 
 fn lift_guard(predicate: Option<PtxPredicate>) -> Result<Option<Guard>, String> {
@@ -225,7 +236,7 @@ fn lift_comparison(comparison: PtxCmpop) -> Result<Comparison, String> {
 #[cfg(test)]
 mod tests {
     use super::lift;
-    use crate::ir::{Address, Comparison, Dim, Guard, Immediate, Instruction, Kernel, Operand, Register, SpecialReg, StateSpace, Statement, Type};
+    use crate::ir::{Address, Block, Comparison, Dim, Guard, Immediate, Instruction, Kernel, Operand, Register, SpecialReg, StateSpace, Statement, Type};
     use ptx_syntax::parse_ptx;
 
     #[test]
@@ -233,11 +244,15 @@ mod tests {
         let source = include_str!("../tests/cuda/noop/noop.ptx");
         let module = parse_ptx(source).expect("noop.ptx should parse");
 
-        let Kernel(statements) = lift(module).expect("lifting failed");
+        let Kernel(blocks, labels) = lift(module).expect("lifting failed");
 
+        assert!(labels.is_empty());
+        assert_eq!(blocks.len(), 1);
+
+        let Block(statements) = &blocks[0];
         assert_eq!(statements.len(), 1);
         let return_statement = statements.first().expect("expected at least one quad");
-        assert_eq!(return_statement, &Statement(None, None, Instruction::Ret));
+        assert_eq!(return_statement, &Statement(None, Instruction::Ret));
     }
 
     #[test]
@@ -245,13 +260,17 @@ mod tests {
         let source = include_str!("../tests/cuda/conditional/conditional.ptx");
         let module = parse_ptx(source).expect("conditional.ptx should parse");
 
-        let Kernel(statements) = lift(module).expect("lifting failed");
+        let Kernel(blocks, labels) = lift(module).expect("lifting failed");
 
-        assert_eq!(statements.len(), 6);
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(labels.len(), 1);
+        assert_eq!(labels.get("$L__BB0_2"), Some(&1));
+
+        let Block(first_block) = &blocks[0];
+        assert_eq!(first_block.len(), 5);
         assert_eq!(
-            statements[0],
+            first_block[0],
             Statement(
-                None,
                 None,
                 Instruction::Mov(
                     Type::U32,
@@ -261,9 +280,8 @@ mod tests {
             )
         );
         assert_eq!(
-            statements[1],
+            first_block[1],
             Statement(
-                None,
                 None,
                 Instruction::Setp(
                     Comparison::Ne,
@@ -275,17 +293,15 @@ mod tests {
             )
         );
         assert_eq!(
-            statements[2],
+            first_block[2],
             Statement(
-                None,
                 Some(Guard(false, Register::Predicate("%p1".into()))),
                 Instruction::Bra("$L__BB0_2".into()),
             )
         );
         assert_eq!(
-            statements[3],
+            first_block[3],
             Statement(
-                None,
                 None,
                 Instruction::Mov(
                     Type::U32,
@@ -295,9 +311,8 @@ mod tests {
             )
         );
         assert_eq!(
-            statements[4],
+            first_block[4],
             Statement(
-                None,
                 None,
                 Instruction::St(
                     StateSpace::Global,
@@ -307,9 +322,12 @@ mod tests {
                 ),
             )
         );
+
+        let Block(second_block) = &blocks[1];
+        assert_eq!(second_block.len(), 1);
         assert_eq!(
-            statements[5],
-            Statement(Some("$L__BB0_2".into()), None, Instruction::Ret)
+            second_block[0],
+            Statement(None, Instruction::Ret)
         );
     }
 }
