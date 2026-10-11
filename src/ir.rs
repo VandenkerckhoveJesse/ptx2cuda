@@ -13,8 +13,20 @@ pub struct Quad {
 #[derive(Debug, PartialEq, Eq)]
 pub enum Opcode {
     Ret,
+    Mov,
+    Setp(Comparison)
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub enum Comparison {
+    Ne,
 }
 
 pub enum Operand {
     None,
+    Register {
+        name: String,
+        component: Option<String>,
+    },
+    Immediate(String)
 }
