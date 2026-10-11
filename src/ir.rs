@@ -1,32 +1,93 @@
-// Implements a Low-Level Intermediate Code as described by Ciffuentes 1994 but for PTX
 
-pub struct Kernel {
-    pub name: String,
-    pub quads: Vec<Quad>,
-}
-pub struct Quad {
-    pub opcode: Opcode,
-    pub dest: Operand,
-    pub src1: Operand,
-    pub src2: Operand,
-}
-#[derive(Debug, PartialEq, Eq)]
-pub enum Opcode {
+// Types
+type Nat = usize;
+
+pub type Label = String;
+
+// Shared
+#[derive(Debug, PartialEq)]
+pub enum Type {U32, S32}
+
+// Kernel
+pub struct Kernel(pub Vec<Statement>);
+
+#[derive(Debug, PartialEq)]
+pub struct  Statement (pub Option<Label>, pub Option<Guard>, pub Instruction);
+
+// Predicate
+#[derive(Debug, PartialEq)]
+pub struct Guard(pub bool, pub Register);
+
+// Instruction
+#[derive(Debug, PartialEq)]
+pub enum Instruction {
+    Bra(Label),
+    Mov(Type, Register, Operand),
+    Setp(Comparison, Type, Register, Operand, Operand),
+    St(StateSpace, Type, Address, Operand),
     Ret,
-    Mov,
-    Setp(Comparison)
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, PartialEq)]
 pub enum Comparison {
-    Ne,
+    Ne
 }
 
-pub enum Operand {
-    None,
-    Register {
-        name: String,
-        component: Option<String>,
-    },
-    Immediate(String)
+#[derive(Debug, PartialEq)]
+pub enum StateSpace {
+    Global
 }
+
+// Operand
+#[derive(Debug, PartialEq)]
+pub enum Operand {
+    Register(Register),
+    Immediate(Immediate),
+    // review: should label also be part of operand, according to PTX spec its part of it, but only limited instructions use it
+}
+
+#[derive(Debug, PartialEq)]
+pub enum Immediate {
+    Int(i64)
+}
+
+#[derive(Debug, PartialEq)]
+pub struct Address(pub String);
+
+// Register
+#[derive(Debug, PartialEq)]
+pub enum Register {
+    Normal(String),         // %r1  -> Normal("r", 1)
+    Predicate(String),      // %p1  -> Predicate("p", 1)
+    Special(SpecialReg),  // %tid.x -> Special(Tid, X)
+}
+#[derive(Debug, PartialEq)]
+pub enum SpecialReg {
+    Tid(Dim)
+}
+#[derive(Debug, PartialEq)]
+pub enum Dim { X, Y, Z }
+
+
+
+
+
+/*
+type Name = String;
+type Nat = usize;
+
+enum Register {
+    Predicate(Name, Nat),
+    Normal(Name, Nat),
+    Special(),
+}
+
+struct Statement(Option<Predicate>, Instruction);
+
+enum Instruction {Mov(),}
+
+enum Predicate {P()}
+
+fn main() {
+    let s = Statement(Some(P()),Mov() )
+}*/
